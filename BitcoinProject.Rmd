@@ -1,0 +1,455 @@
+---
+title: "BitcoinProject"
+author: "Ryan Lancaster"
+date: "2024-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load required libraries
+library(quantmod)
+library(tidyverse)
+library(lubridate)
+library(TTR)
+
+# Function to get and process market data
+get_market_data <- function(start_date = "2020-01-01", end_date = Sys.Date()) {
+  # Download data for all assets
+  getSymbols(c("BTC-USD", "GLD", "^GSPC"), 
+             src = "yahoo",
+             from = start_date,
+             to = end_date,
+             auto.assign = TRUE)
+  
+  # Function to process each asset
+  process_asset <- function(symbol_data, asset_name) {
+    data.frame(
+      Date = index(symbol_data),
+      Asset = asset_name,
+      Open = as.numeric(symbol_data[,1]),
+      High = as.numeric(symbol_data[,2]),
+      Low = as.numeric(symbol_data[,3]),
+      Close = as.numeric(symbol_data[,4]),
+      Volume = as.numeric(symbol_data[,5]),
+      Adjusted = as.numeric(symbol_data[,6])
+    ) %>%
+      # Calculate additional metrics
+      mutate(
+        Returns = (Close - lag(Close))/lag(Close),
+        LogReturns = log(Close/lag(Close)),
+        Volatility = sqrt(252) * slider::slide_dbl(
+          LogReturns,
+          sd,
+          .before = 20,
+          .complete = TRUE
+        ),
+        MA20 = TTR::SMA(Close, 20),
+        MA50 = TTR::SMA(Close, 50),
+        RSI = TTR::RSI(Close)
+      )
+  }
+  
+  # Process each asset
+  bitcoin_data <- process_asset(get("BTC-USD"), "Bitcoin")
+  gold_data <- process_asset(get("GLD"), "Gold")
+  sp500_data <- process_asset(get("GSPC"), "S&P500")
+  
+  # Combine all assets
+  all_assets <- bind_rows(bitcoin_data, gold_data, sp500_data)
+  
+  # Calculate correlations
+  correlations <- all_assets %>%
+    select(Asset, Date, Returns) %>%
+    pivot_wider(names_from = Asset, values_from = Returns) %>%
+    select(-Date) %>%
+    cor(use = "complete.obs")
+  
+  # Save to CSV
+  write.csv(all_assets, "market_data.csv", row.names = FALSE)
+  write.csv(correlations, "correlations.csv", row.names = TRUE)
+  
+  # Generate summary report
+  summary_stats <- all_assets %>%
+    group_by(Asset) %>%
+    summarise(
+      Avg_Daily_Return = mean(Returns, na.rm = TRUE),
+      Annualized_Return = (1 + Avg_Daily_Return)^252 - 1,
+      Daily_Vol = sd(Returns, na.rm = TRUE),
+      Annualized_Vol = Daily_Vol * sqrt(252),
+      Sharpe = (Annualized_Return - 0.02) / Annualized_Vol,  # Assuming 2% risk-free rate
+      Max_Drawdown = (max(Close) - min(Close))/max(Close),
+      Observations = n()
+    )
+  
+  write.csv(summary_stats, "summary_statistics.csv", row.names = FALSE)
+  
+  # Create comparison plot
+  comparison_plot <- all_assets %>%
+    group_by(Asset) %>%
+    mutate(Normalized_Price = Close / first(Close) * 100) %>%
+    ggplot(aes(x = Date, y = Normalized_Price, color = Asset)) +
+    geom_line() +
+    labs(title = "Normalized Price Comparison (Base = 100)",
+         y = "Normalized Price",
+         x = "Date") +
+    theme_minimal()
+  
+  ggsave("price_comparison.png", comparison_plot)
+  
+  # Return all data and analysis
+  return(list(
+    data = all_assets,
+    correlations = correlations,
+    summary = summary_stats,
+    plot = comparison_plot
+  ))
+}
+
+# Get the data
+market_data <- get_market_data("2020-01-01")
+
+# Display summary statistics
+print(market_data$summary)
+
+# Display correlations
+print(market_data$correlations)
+
+# Display the comparison plot
+print(market_data$plot)
+```
+
+```{r}
+
+
+# Load required libraries
+library(fpp3)
+library(tidyverse)
+library(quantmod)
+library(tseries)
+library(forecast)
+library(TTR)
+
+# Import data from CSV created earlier
+market_data <- read.csv("market_data.csv") %>%
+  mutate(Date = as.Date(Date))
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+
+# Calculate exact dates and observations
+# Assuming data from 2020-01-01 to current date (2024-12-02)
+total_days <- as.numeric(difftime("2024-12-02", "2020-01-01", units = "days"))
+training_days <- floor(total_days * 0.8)
+test_days <- total_days - training_days
+
+# Training period: 2020-01-01 to approximately 2023-09-24 (80%)
+# Test period: 2023-09-25 to 2024-12-02 (20%)
+
+# Analysis summary
+cat("Data Split Analysis (2020-2024)\n")
+cat("================================\n\n")
+cat("Total Period: 2020-01-01 to 2024-12-02\n")
+cat("Total Trading Days:", total_days, "\n\n")
+
+cat("Training Set:\n")
+cat("- Start Date: 2020-01-01\n")
+cat("- End Date: ~2023-09-24\n")
+cat("- Approximate Trading Days:", training_days, "\n")
+cat("- Percentage: 80%\n\n")
+
+cat("Test Set:\n")
+cat("- Start Date: ~2023-09-25\n")
+cat("- End Date: 2024-12-02\n")
+cat("- Approximate Trading Days:", test_days, "\n")
+cat("- Percentage: 20%\n")
+
+# Create visualization of the split
+dates <- seq(as.Date("2020-01-01"), as.Date("2024-12-02"), by="days")
+split_date <- as.Date("2023-09-24")
+
+ggplot() +
+  geom_vline(xintercept = as.numeric(split_date), linetype="dashed", color="red", size=1) +
+  annotate("rect", 
+           xmin = as.Date("2020-01-01"), xmax = split_date,
+           ymin = -Inf, ymax = Inf,
+           alpha = 0.2, fill = "blue") +
+  annotate("rect", 
+           xmin = split_date, xmax = as.Date("2024-12-02"),
+           ymin = -Inf, ymax = Inf,
+           alpha = 0.2, fill = "green") +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(title = "Bitcoin Price Data Split (2020-2024)",
+       subtitle = "Blue: Training Set (80%) | Green: Test Set (20%)",
+       x = "Date",
+       y = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# 2. Data Manipulation and Time Series Conversion
+```{r data_manipulation}
+# Convert to time series objects
+btc_ts <- market_data %>%
+  filter(Asset == "Bitcoin") %>%
+  select(Date, Close) %>%
+  as_tsibble(index = Date) %>%
+  rename(Price = Close)
+
+# Split into training and testing sets (80/20 split)
+train_end <- floor(nrow(btc_ts) * 0.8)
+train_ts <- btc_ts[1:train_end,]
+test_ts <- btc_ts[(train_end + 1):nrow(btc_ts),]
+```
+
+# 3. Data Visualization and Transformation Analysis
+```{r visualization}
+# Plot original series
+p1 <- ggplot(btc_ts, aes(x = Date, y = Price)) +
+  geom_line() +
+  labs(title = "Bitcoin Price Over Time",
+       y = "Price (USD)") +
+  theme_minimal()
+
+# Check for need of transformation
+lambda <- forecast::BoxCox.lambda(btc_ts$Price)
+p2 <- ggplot(btc_ts, aes(x = Date, y = box_cox(Price, lambda))) +
+  geom_line() +
+  labs(title = "Box-Cox Transformed Bitcoin Price",
+       y = "Transformed Price") +
+  theme_minimal()
+
+# Decomposition plot
+dcmp <- btc_ts %>%
+  model(stl = STL(Price))
+
+p3 <- components(dcmp) %>%
+  autoplot() +
+  labs(title = "Decomposition of Bitcoin Price Series")
+
+grid.arrange(p1, p2, p3, ncol = 1)
+```
+
+# 4. Preliminary Models
+```{r preliminary_models}
+# Fit preliminary models
+prelim_fits <- train_ts %>%
+  model(
+    Mean = MEAN(Price),
+    `Naïve` = NAIVE(Price),
+    `Random Walk` = RW(Price),
+    `Seasonal Naïve` = SNAIVE(Price)
+  )
+
+# Generate forecasts
+prelim_fc <- prelim_fits %>%
+  forecast(h = nrow(test_ts))
+
+# Calculate accuracy metrics
+prelim_accuracy <- accuracy(prelim_fc, test_ts) %>%
+  select(.model, RMSE, MAE, MAPE)
+
+# Plot forecasts
+autoplot(train_ts, Price) +
+  autolayer(prelim_fc) +
+  autolayer(test_ts, color = "black") +
+  labs(title = "Preliminary Model Forecasts",
+       y = "Price (USD)") +
+  theme_minimal()
+```
+
+# 5. Time Series Regression Models
+
+```{r regression_models}
+# Convert data to proper time series format
+reg_data <- market_data %>%
+  select(Date, Asset, Close) %>%
+  pivot_wider(
+    names_from = Asset,
+    values_from = Close
+  ) %>%
+  rename(
+    Bitcoin = Bitcoin,
+    Gold = Gold,
+    SP500 = `S&P500`
+  ) %>%
+  mutate(
+    Date = as.Date(Date),
+    trend = row_number(),
+    month = month(Date)
+  ) %>%
+  na.omit() %>%
+  # Convert to tsibble
+  as_tsibble(index = Date)
+
+# Check if it's a proper tsibble
+print(class(reg_data))
+
+# Now fit the regression models
+reg_models <- reg_data %>%
+  model(
+    reg1 = TSLM(Bitcoin ~ trend + month),
+    reg2 = TSLM(Bitcoin ~ trend + month + Gold),
+    reg3 = TSLM(Bitcoin ~ trend + month + SP500),
+    reg4 = TSLM(Bitcoin ~ trend + month + Gold + SP500)
+  )
+
+# Get model summaries
+reg_summaries <- reg_models %>%
+  glance()
+
+# Calculate accuracy metrics
+reg_accuracy <- accuracy(reg_models)
+
+# Print results
+print("Model Summaries:")
+print(reg_summaries)
+print("\nAccuracy Metrics:")
+print(reg_accuracy)
+
+# Visualize the fitted values
+augment(reg_models) %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Bitcoin, color = "Actual")) +
+  geom_line(aes(y = .fitted, color = "Fitted")) +
+  facet_wrap(~.model, scales = "free_y") +
+  labs(title = "Actual vs Fitted Values",
+       y = "Bitcoin Price") +
+  theme_minimal()
+
+# Add residual analysis
+augment(reg_models) %>%
+  ggplot(aes(x = Date, y = .resid)) +
+  geom_line() +
+  facet_wrap(~.model, scales = "free_y") +
+  labs(title = "Residuals Over Time",
+       y = "Residual") +
+  theme_minimal()
+```
+
+
+# 6. ETS Models
+```{r ets_models}
+# Enhanced ETS Analysis
+library(fpp3)
+library(tidyverse)
+library(forecast)
+
+# Fit ETS models with decomposition
+ets_analysis <- train_ts %>%
+  model(
+    ets_auto = ETS(Price),
+    ets_aam = ETS(Price ~ error("A") + trend("A") + season("M")),
+    ets_aan = ETS(Price ~ error("A") + trend("A") + season("N"))
+  )
+
+# Extract model components using tidy()
+model_components <- ets_analysis %>%
+  tidy()
+
+# Generate forecasts
+ets_fc <- ets_analysis %>%
+  forecast(h = nrow(test_ts))
+
+# Calculate comprehensive accuracy metrics
+accuracy_metrics <- accuracy(ets_fc, test_ts) %>%
+  select(.model, RMSE, MAE, MAPE, MASE)
+
+# Residual analysis
+residuals <- augment(ets_analysis)
+residual_stats <- residuals %>%
+  group_by(.model) %>%
+  summarise(
+    mean_residual = mean(.resid, na.rm = TRUE),
+    residual_sd = sd(.resid, na.rm = TRUE),
+    q25 = quantile(.resid, 0.25, na.rm = TRUE),
+    q75 = quantile(.resid, 0.75, na.rm = TRUE),
+    ljung_box_p = Box.test(.resid, type = "Ljung-Box")$p.value
+  )
+
+# Information Criteria
+ic_metrics <- ets_analysis %>%
+  glance()
+
+# Print results
+cat("=== ETS Model Analysis ===\n\n")
+cat("1. Model Components:\n")
+print(model_components)
+
+cat("\n2. Accuracy Metrics:\n")
+print(accuracy_metrics)
+
+cat("\n3. Residual Statistics:\n")
+print(residual_stats)
+
+cat("\n4. Information Criteria:\n")
+print(ic_metrics)
+
+# Visualization of forecasts vs actual
+forecast_plot <- ets_fc %>%
+  autoplot() +
+  autolayer(train_ts, alpha = 0.5) +
+  autolayer(test_ts, color = "red") +
+  labs(title = "ETS Model Forecasts vs Actual",
+       y = "Bitcoin Price",
+       x = "Date") +
+  theme_minimal()
+
+print(forecast_plot)
+
+# Residual diagnostic plots
+residual_plot <- residuals %>%
+  ggplot(aes(x = Date, y = .resid)) +
+  geom_line() +
+  facet_wrap(~.model, scales = "free_y") +
+  labs(title = "Residuals Over Time",
+       y = "Residual",
+       x = "Date") +
+  theme_minimal()
+
+print(residual_plot)
+```
+
+# 7. ARIMA Models
+```{r arima_models}
+# Fit ARIMA models
+arima_fits <- train_ts %>%
+  model(
+    arima_auto = ARIMA(Price),
+    arima_specified = ARIMA(Price ~ pdq(1,1,1))
+  )
+
+# Generate forecasts
+arima_fc <- arima_fits %>%
+  forecast(h = nrow(test_ts))
+
+# Calculate accuracy
+arima_accuracy <- accuracy(arima_fc, test_ts)
+```
+
+# 8. Model Comparison
+```{r model_comparison}
+# Combine accuracy metrics from all models
+all_accuracy <- bind_rows(
+  prelim_accuracy %>% mutate(category = "Preliminary"),
+  reg_accuracy %>% mutate(category = "Regression"),
+  ets_accuracy %>% mutate(category = "ETS"),
+  arima_accuracy %>% mutate(category = "ARIMA")
+)
+
+# Create comparison plot
+ggplot(all_accuracy, aes(x = .model, y = RMSE, fill = category)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Model Comparison - RMSE",
+       y = "RMSE",
+       x = "Model") +
+  theme_minimal()
+```
+```
+
