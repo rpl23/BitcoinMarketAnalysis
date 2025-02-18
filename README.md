@@ -119,10 +119,6 @@ The project follows a structured data processing pipeline:
 
 - Ryan Lancaster
 
-## License
-
-This project is available under the MIT License.
-
 ## Acknowledgments
 
 - Data provided by Yahoo Finance
